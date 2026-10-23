@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import path from "node:path"
-import { snapshotDirectory } from "./signal"
+import { signalIncludesServer, snapshotDirectory } from "./signal"
 
 test.each([
   [undefined, undefined, false],
@@ -17,4 +17,8 @@ test.each([
   expect(snapshotDirectory({ OPENCODE_DESKTOP_MEMORY_LOG: interval, OPENCODE_DESKTOP_HEAP_DIRECTORY: directory })).toBe(
     enabled ? directory : undefined,
   )
+})
+
+test.each([undefined, "", "0", "true", "1"])("signal server snapshots require the explicit 1 opt-in (%s)", (value) => {
+  expect(signalIncludesServer({ OPENCODE_DESKTOP_HEAP_INCLUDE_SERVER: value })).toBe(value === "1")
 })

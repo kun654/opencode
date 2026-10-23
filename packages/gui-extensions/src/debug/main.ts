@@ -8,7 +8,8 @@ import type definition from "./index"
 import { startMemoryLog } from "./memory-log"
 import { debugBuild, memoryLogInterval } from "./options"
 import { captureServer } from "./server-heap"
-import { snapshotDirectory } from "./signal"
+import { signalIncludesServer, snapshotDirectory } from "./signal"
+import { ProcessSignal } from "@opencode/util/process-signal"
 
 /** A desktop process the manifest lists: the file written, or why there is none. */
 type Snapshot = { readonly process: "main" | "window"; readonly pid: number; readonly window?: number } & (
@@ -25,18 +26,18 @@ type Running = { stop?: () => void }
 const setup: MainSetup<typeof definition> = (ctx) => {
   const queue: Queue = { tail: Promise.resolve() }
 
-  const capture = async (root: string) => {
+  const capture = async (root: string, includeServer: boolean) => {
     const directory = path.join(root, `opencode-heap-${new Date().toISOString().replace(/[:.]/g, "")}`)
 
     // Snapshots hold prompts, file contents and credentials. Recursive, because Downloads can be missing on Linux.
     await mkdir(directory, { recursive: true, mode: 0o700 })
-    ctx.log.write("info", "capturing heap snapshots", { directory })
+    ctx.log.write("info", "capturing heap snapshots", { directory, includeServer })
 
     // The server is another process, so it serializes its heap while the windows do. Windows go one at a time: a
     // snapshot can double a process's memory, and a leaking app may not have room for every window at once. Main goes
     // last: writing its own heap blocks the loop that receives the others.
     const [serverSnapshot, windows] = await Promise.all([
-      captureServer(ctx.serverEndpoints.get("sidecar"), directory, ctx.scope.signal),
+      includeServer ? captureServer(ctx.serverEndpoints.get("sidecar"), directory, ctx.scope.signal) : undefined,
       (async () => {
         const list: Snapshot[] = []
 
@@ -54,7 +55,7 @@ const setup: MainSetup<typeof definition> = (ctx) => {
       )
 
     const snapshots = await Promise.all(
-      [serverSnapshot, ...windows, main].map(async (snapshot) => {
+      [...(serverSnapshot ? [serverSnapshot] : []), ...windows, main].map(async (snapshot) => {
         if ("error" in snapshot) return snapshot
         const file = "file" in snapshot ? path.join(directory, snapshot.file) : snapshot.path
 
@@ -75,6 +76,7 @@ const setup: MainSetup<typeof definition> = (ctx) => {
       JSON.stringify(
         {
           created: new Date().toISOString(),
+          includeServer,
           app: {
             name: app.getName(),
             version: app.getVersion(),
@@ -100,8 +102,8 @@ const setup: MainSetup<typeof definition> = (ctx) => {
     return { directory, complete }
   }
 
-  const enqueue = (directory: string) => {
-    const run = queue.tail.then(() => capture(directory))
+  const enqueue = (directory: string, includeServer: boolean) => {
+    const run = queue.tail.then(() => capture(directory, includeServer))
     queue.tail = run.catch(() => undefined)
 
     return run
@@ -109,7 +111,7 @@ const setup: MainSetup<typeof definition> = (ctx) => {
 
   ctx.provide(HeapSnapshots, {
     // A window that closes meanwhile does not cancel the capture.
-    write: () => enqueue(app.getPath("downloads")),
+    write: () => enqueue(app.getPath("downloads"), true),
   })
 
   if (!debugBuild(ctx.build)) return
@@ -151,17 +153,14 @@ const setup: MainSetup<typeof definition> = (ctx) => {
     // Signals coalesce while a capture is running; repeated signals must not fill the disk with queued dumps.
     if (capturing || ctx.scope.signal.aborted) return
     capturing = true
-    void enqueue(directory)
+    void enqueue(directory, signalIncludesServer(process.env))
       .catch((error: Error) => ctx.log.write("error", "heap snapshot capture failed", { error: error.message }))
       .finally(() => {
         capturing = false
       })
   }
 
-  process.on("SIGUSR2", onSignal)
-  ctx.scope.addFinalizer(() => {
-    process.off("SIGUSR2", onSignal)
-  })
+  ctx.scope.addFinalizer(ProcessSignal.subscribe("SIGUSR2", onSignal))
   ctx.log.write("info", "heap snapshot signal enabled", { pid: process.pid, signal: "SIGUSR2", directory })
 }
 
