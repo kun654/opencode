@@ -1,5 +1,5 @@
 import { app, type BrowserWindow } from "electron"
-import { mkdir, writeFile } from "node:fs/promises"
+import { mkdir, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { writeHeapSnapshot } from "node:v8"
 import type { MainSetup } from "../sdk/main"
@@ -8,6 +8,7 @@ import type definition from "./index"
 import { startMemoryLog } from "./memory-log"
 import { debugBuild, memoryLogInterval } from "./options"
 import { captureServer } from "./server-heap"
+import { snapshotDirectory } from "./signal"
 
 /** A desktop process the manifest lists: the file written, or why there is none. */
 type Snapshot = { readonly process: "main" | "window"; readonly pid: number; readonly window?: number } & (
@@ -24,11 +25,8 @@ type Running = { stop?: () => void }
 const setup: MainSetup<typeof definition> = (ctx) => {
   const queue: Queue = { tail: Promise.resolve() }
 
-  const capture = async () => {
-    const directory = path.join(
-      app.getPath("downloads"),
-      `opencode-heap-${new Date().toISOString().replace(/[:.]/g, "")}`,
-    )
+  const capture = async (root: string) => {
+    const directory = path.join(root, `opencode-heap-${new Date().toISOString().replace(/[:.]/g, "")}`)
 
     // Snapshots hold prompts, file contents and credentials. Recursive, because Downloads can be missing on Linux.
     await mkdir(directory, { recursive: true, mode: 0o700 })
@@ -55,7 +53,21 @@ const setup: MainSetup<typeof definition> = (ctx) => {
         (error: Error): Snapshot => ({ process: "main", pid: process.pid, error: error.message }),
       )
 
-    const snapshots = [serverSnapshot, ...windows, main]
+    const snapshots = await Promise.all(
+      [serverSnapshot, ...windows, main].map(async (snapshot) => {
+        if ("error" in snapshot) return snapshot
+        const file = "file" in snapshot ? path.join(directory, snapshot.file) : snapshot.path
+
+        const bytes = await stat(file).then(
+          (info) => info.size,
+          () => null,
+        )
+
+        ctx.log.write("info", "heap snapshot written", { file, bytes })
+
+        return { ...snapshot, bytes }
+      }),
+    )
 
     // Written last, so a script can wait for it.
     await writeFile(
@@ -88,14 +100,16 @@ const setup: MainSetup<typeof definition> = (ctx) => {
     return { directory, complete }
   }
 
+  const enqueue = (directory: string) => {
+    const run = queue.tail.then(() => capture(directory))
+    queue.tail = run.catch(() => undefined)
+
+    return run
+  }
+
   ctx.provide(HeapSnapshots, {
     // A window that closes meanwhile does not cancel the capture.
-    write: () => {
-      const run = queue.tail.then(capture)
-      queue.tail = run.catch(() => undefined)
-
-      return run
-    },
+    write: () => enqueue(app.getPath("downloads")),
   })
 
   if (!debugBuild(ctx.build)) return
@@ -127,6 +141,28 @@ const setup: MainSetup<typeof definition> = (ctx) => {
       provider.changed()
     },
   })
+
+  const directory = snapshotDirectory(process.env)
+
+  if (!directory || process.platform === "win32") return
+  let capturing = false
+
+  const onSignal = () => {
+    // Signals coalesce while a capture is running; repeated signals must not fill the disk with queued dumps.
+    if (capturing || ctx.scope.signal.aborted) return
+    capturing = true
+    void enqueue(directory)
+      .catch((error: Error) => ctx.log.write("error", "heap snapshot capture failed", { error: error.message }))
+      .finally(() => {
+        capturing = false
+      })
+  }
+
+  process.on("SIGUSR2", onSignal)
+  ctx.scope.addFinalizer(() => {
+    process.off("SIGUSR2", onSignal)
+  })
+  ctx.log.write("info", "heap snapshot signal enabled", { pid: process.pid, signal: "SIGUSR2", directory })
 }
 
 function captureWindow(window: BrowserWindow, directory: string) {
