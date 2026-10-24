@@ -79,19 +79,16 @@ test("preserves authored synthetic-looking names without an anonymous family roo
   expect(result.components.schemas.Union_2).toEqual({ type: "string" })
 })
 
-test("extracts shared parameters and named parameter structs into components.parameters", () => {
+test("extracts shared parameters used by two or more operations into components.parameters", () => {
   const ItemID = Schema.String.check(Schema.isStartingWith("itm_")).annotate({
     identifier: "Item.ID",
   })
-  const SharedQuery = Schema.Struct({
-    cursor: Schema.optional(Schema.String),
-  }).annotate({ identifier: "SharedQuery" })
 
   const api = HttpApi.make("test").add(
     HttpApiGroup.make("items")
       .add(
         HttpApiEndpoint.get("list", "/items", {
-          query: SharedQuery,
+          query: { cursor: Schema.optional(Schema.String) },
         }),
       )
       .add(
@@ -116,14 +113,18 @@ test("extracts shared parameters and named parameter structs into components.par
       ),
   )
 
-  const result = stabilizeOpenApi(OpenApi.fromApi(api), api)
+  const result = stabilizeOpenApi(OpenApi.fromApi(api))
   expect(Object.keys(result.components.parameters ?? {})).toEqual([
-    "SharedQuery.cursor",
     "path.id",
     "path.id.Item.ID",
   ])
   expect(result.paths?.["/items"]?.get?.parameters).toEqual([
-    { $ref: "#/components/parameters/SharedQuery.cursor" },
+    {
+      name: "cursor",
+      in: "query",
+      schema: { anyOf: [{ type: "string" }, { type: "null" }] },
+      required: false,
+    },
   ])
   expect(result.paths?.["/items/{id}"]?.get?.parameters).toEqual([
     { $ref: "#/components/parameters/path.id.Item.ID" },
@@ -133,9 +134,43 @@ test("extracts shared parameters and named parameter structs into components.par
   ])
 })
 
+test("adding an unrelated endpoint with a limit query param does not rename existing parameter components", () => {
+  const baseGroup = HttpApiGroup.make("items")
+    .add(
+      HttpApiEndpoint.get("listA", "/a", {
+        query: { limit: Schema.optional(Schema.NumberFromString) },
+      }),
+    )
+    .add(
+      HttpApiEndpoint.get("listB", "/b", {
+        query: { limit: Schema.optional(Schema.NumberFromString) },
+      }),
+    )
+
+  const before = stabilizeOpenApi(OpenApi.fromApi(HttpApi.make("test").add(baseGroup)))
+  const after = stabilizeOpenApi(
+    OpenApi.fromApi(
+      HttpApi.make("test").add(
+        baseGroup.add(
+          HttpApiEndpoint.get("unrelated", "/unrelated", {
+            query: {
+              limit: Schema.optional(Schema.NumberFromString).annotate({
+                description: "Unrelated endpoint limit",
+              }),
+            },
+          }),
+        ),
+      ),
+    ),
+  )
+
+  expect(before.components.parameters).toBeDefined()
+  expect(after.components.parameters).toEqual(before.components.parameters)
+})
+
 test("stabilized ClientApi OpenAPI document is semantically identical after dereferencing $refs", () => {
   const raw = OpenApi.fromApi(ClientApi)
-  const stabilized = stabilizeOpenApi(structuredClone(raw), ClientApi)
+  const stabilized = stabilizeOpenApi(structuredClone(raw))
 
   const dereference = (spec: {
     components?: {
@@ -159,7 +194,17 @@ test("stabilized ClientApi OpenAPI document is semantically identical after dere
             ? schemas[ref.slice("#/components/schemas/".length)]
             : undefined
         if (target === undefined) throw new Error(`Unresolved OpenAPI $ref: ${ref}`)
-        return visit(target, next)
+        const resolved = visit(target, next)
+        const siblings = Object.entries(node).filter(([key]) => key !== "$ref")
+        if (siblings.length === 0 || typeof resolved !== "object" || resolved === null || Array.isArray(resolved)) {
+          return resolved
+        }
+        return Object.fromEntries(
+          Object.entries({
+            ...resolved,
+            ...Object.fromEntries(siblings.map(([key, value]) => [key, visit(value, seen)])),
+          }).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
+        )
       }
       return Object.fromEntries(
         Object.entries(node)

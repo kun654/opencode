@@ -1,6 +1,3 @@
-import { Context, Schema, SchemaAST } from "effect"
-import { HttpApi, type HttpApiGroup, OpenApi } from "effect/http-api"
-
 type OpenApiParameter = {
   $ref?: string
   name?: string
@@ -29,10 +26,7 @@ const compareKeys = ([left]: readonly [string, unknown], [right]: readonly [stri
 // Effect gives shared anonymous schemas encounter-order names (`Union_3`) and inlines every
 // operation parameter. Replace anonymous schema names with a content hash, extract shared
 // parameters into `components.parameters`, and sort components so unrelated additions stay local.
-export function stabilizeOpenApi<
-  Id extends string = string,
-  Groups extends HttpApiGroup.Constraint = HttpApiGroup.Constraint,
->(source: object, api?: HttpApi.HttpApi<Id, Groups>) {
+export function stabilizeOpenApi(source: object) {
   const document = source as OpenApiDocument
   const schemas = document.components.schemas
   const families = ["Union", "Objects", "Arrays"].filter((name) => `${name}_` in schemas)
@@ -96,7 +90,7 @@ export function stabilizeOpenApi<
     stable.set(target, schema)
   }
   result.components.schemas = Object.fromEntries([...stable].sort(compareKeys))
-  stabilizeParameters(result, canonical, digest, api)
+  stabilizeParameters(result, canonical, digest)
   return result
 }
 
@@ -104,21 +98,14 @@ type ParameterShape = {
   key: string
   parameter: OpenApiParameter
   count: number
-  structs: Map<string, number>
-  anonymousCount: number
 }
 
-function stabilizeParameters<
-  Id extends string,
-  Groups extends HttpApiGroup.Constraint,
->(
+function stabilizeParameters(
   document: OpenApiDocument,
   canonical: (node: unknown) => unknown,
   digest: (node: unknown) => string,
-  api?: HttpApi.HttpApi<Id, Groups>,
 ) {
   if (!document.paths) return
-  const endpointStructs = collectEndpointStructs(api)
   const byShape = new Map<string, ParameterShape>()
 
   for (const item of Object.values(document.paths)) {
@@ -128,35 +115,22 @@ function stabilizeParameters<
         if ("$ref" in parameter || !parameter.in || !parameter.name) continue
         const key = JSON.stringify(canonical(parameter))
         const existing = byShape.get(key)
-        const info = endpointStructs.get(`${operation.operationId ?? ""}\0${parameter.in}\0${parameter.name}`)
-        const structs = new Map(existing?.structs)
-        if (info) structs.set(info.structId, info.fieldCount)
         byShape.set(key, {
           key,
           parameter: existing?.parameter ?? parameter,
           count: (existing?.count ?? 0) + 1,
-          structs,
-          anonymousCount: (existing?.anonymousCount ?? 0) + (info ? 0 : 1),
         })
       }
     }
   }
 
-  const extracted = [...byShape.values()].filter((shape) => shape.count >= 2 || shape.structs.size > 0)
+  const extracted = [...byShape.values()].filter((shape) => shape.count >= 2)
   if (extracted.length === 0) return
 
-  const byBase = new Map<string, Array<ParameterShape>>()
-  for (const shape of extracted) {
-    const base = baseParameterName(shape)
-    byBase.set(base, [...(byBase.get(base) ?? []), shape])
-  }
-
   const byCandidate = new Map<string, Array<ParameterShape>>()
-  for (const [base, shapes] of byBase) {
-    for (const shape of shapes) {
-      const candidate = shapes.length === 1 ? base : qualifyParameterName(base, shape.parameter)
-      byCandidate.set(candidate, [...(byCandidate.get(candidate) ?? []), shape])
-    }
+  for (const shape of extracted) {
+    const candidate = qualifyParameterName(`${shape.parameter.in}.${shape.parameter.name}`, shape.parameter)
+    byCandidate.set(candidate, [...(byCandidate.get(candidate) ?? []), shape])
   }
 
   const nameByKey = new Map<string, string>()
@@ -181,52 +155,6 @@ function stabilizeParameters<
   }
 
   document.components.parameters = Object.fromEntries([...parameters].sort(compareKeys))
-}
-
-function collectEndpointStructs<
-  Id extends string,
-  Groups extends HttpApiGroup.Constraint,
->(api?: HttpApi.HttpApi<Id, Groups>) {
-  const result = new Map<string, { structId: string; fieldCount: number }>()
-  if (!api) return result
-  HttpApi.reflect(api, {
-    onGroup() {},
-    onEndpoint({ group, endpoint }) {
-      const operationId = Context.getOrElse(
-        endpoint.annotations,
-        OpenApi.Identifier,
-        () => (group.topLevel ? endpoint.identifier : `${group.identifier}.${endpoint.identifier}`),
-      )
-      for (const [location, schema] of [
-        ["path", endpoint.params],
-        ["header", endpoint.headers],
-        ["query", endpoint.query],
-      ] as const) {
-        if (!schema) continue
-        const decoded = Schema.toType(schema)
-        const structId = SchemaAST.resolveIdentifier(schema.ast) ?? SchemaAST.resolveIdentifier(decoded.ast)
-        if (!structId) continue
-        if (!SchemaAST.isObjects(decoded.ast)) continue
-        for (const property of decoded.ast.propertySignatures) {
-          result.set(`${operationId}\0${location}\0${String(property.name)}`, {
-            structId,
-            fieldCount: decoded.ast.propertySignatures.length,
-          })
-        }
-      }
-    },
-  })
-  return result
-}
-
-function baseParameterName(shape: ParameterShape) {
-  if (shape.structs.size === 1) {
-    const [[structId, fieldCount]] = [...shape.structs.entries()]
-    if (shape.anonymousCount === 0 || fieldCount === 1) {
-      return `${structId}.${shape.parameter.name}`
-    }
-  }
-  return `${shape.parameter.in}.${shape.parameter.name}`
 }
 
 function qualifyParameterName(base: string, parameter: OpenApiParameter) {
