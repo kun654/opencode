@@ -4,7 +4,7 @@ import { fileURLToPath } from "url"
 import { ClientApi } from "../src/client.js"
 import { stabilizeOpenApi } from "./openapi-stabilize.js"
 
-const document = await format(JSON.stringify(stabilizeOpenApi(OpenApi.fromApi(ClientApi)), null, 2), {
+const document = await format(JSON.stringify(stabilizeOpenApi(OpenApi.fromApi(ClientApi), ClientApi), null, 2), {
   parser: "json",
   printWidth: 120,
 })
