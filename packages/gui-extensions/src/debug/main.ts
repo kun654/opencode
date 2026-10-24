@@ -120,11 +120,41 @@ const setup: MainSetup<typeof definition> = (ctx) => {
   const envInterval = memoryLogInterval(process.env.OPENCODE_DESKTOP_MEMORY_LOG)
   const stored = ctx.stores.memory
   const running: Running = {}
+  const directory = process.platform === "win32" ? undefined : snapshotDirectory(process.env)
+  let capturing = false
+
+  const onSignal = () => {
+    // Signals coalesce while a capture is running; repeated signals must not fill the disk with queued dumps.
+    if (!directory || capturing || ctx.scope.signal.aborted) return
+    capturing = true
+    void enqueue(directory, signalIncludesServer(process.env))
+      .catch((error: Error) => ctx.log.write("error", "heap snapshot capture failed", { error: error.message }))
+      .finally(() => {
+        capturing = false
+      })
+  }
+
+  const start = () => {
+    const stopLog = startMemoryLog(envInterval ?? 30_000, ctx.log)
+
+    if (!directory) return stopLog
+
+    // Installed the first time diagnostics turn on, and kept: a script's late signal while they are off, or while
+    // the extension reloads, is logged and ignored instead of killing the app.
+    ProcessSignal.install("SIGUSR2", () => ctx.log.write("warn", "heap snapshot signal ignored: diagnostics are off"))
+    const unsubscribe = ProcessSignal.subscribe("SIGUSR2", onSignal)
+    ctx.log.write("info", "heap snapshot signal enabled", { pid: process.pid, signal: "SIGUSR2", directory })
+
+    return () => {
+      unsubscribe()
+      stopLog()
+    }
+  }
 
   const sync = () => {
     const on = envInterval !== undefined || stored.value
 
-    if (on && !running.stop) running.stop = startMemoryLog(envInterval ?? 30_000, ctx.log)
+    if (on && !running.stop) running.stop = start()
 
     if (on || !running.stop) return
     running.stop()
@@ -143,25 +173,6 @@ const setup: MainSetup<typeof definition> = (ctx) => {
       provider.changed()
     },
   })
-
-  const directory = snapshotDirectory(process.env)
-
-  if (!directory || process.platform === "win32") return
-  let capturing = false
-
-  const onSignal = () => {
-    // Signals coalesce while a capture is running; repeated signals must not fill the disk with queued dumps.
-    if (capturing || ctx.scope.signal.aborted) return
-    capturing = true
-    void enqueue(directory, signalIncludesServer(process.env))
-      .catch((error: Error) => ctx.log.write("error", "heap snapshot capture failed", { error: error.message }))
-      .finally(() => {
-        capturing = false
-      })
-  }
-
-  ctx.scope.addFinalizer(ProcessSignal.subscribe("SIGUSR2", onSignal))
-  ctx.log.write("info", "heap snapshot signal enabled", { pid: process.pid, signal: "SIGUSR2", directory })
 }
 
 function captureWindow(window: BrowserWindow, directory: string) {

@@ -3,20 +3,12 @@ import path from "node:path"
 import { signalIncludesServer, snapshotDirectory } from "./signal"
 
 test.each([
-  [undefined, undefined, false],
-  [undefined, path.resolve("heaps"), false],
-  ["60", undefined, false],
-  ["60", "relative", false],
-  ["60", "", false],
-  ["0", path.resolve("heaps"), false],
-  ["Infinity", path.resolve("heaps"), false],
-  ["0.5", path.resolve("heaps"), false],
-  ["2147484", path.resolve("heaps"), false],
-  ["60", path.resolve("heaps"), true],
-] as const)("external snapshots require valid diagnostics=%s and destination=%s", (interval, directory, enabled) => {
-  expect(snapshotDirectory({ OPENCODE_DESKTOP_MEMORY_LOG: interval, OPENCODE_DESKTOP_HEAP_DIRECTORY: directory })).toBe(
-    enabled ? directory : undefined,
-  )
+  [undefined, false],
+  ["relative", false],
+  ["", false],
+  [path.resolve("heaps"), true],
+] as const)("signal snapshots require an absolute destination (%s)", (directory, enabled) => {
+  expect(snapshotDirectory({ OPENCODE_DESKTOP_HEAP_DIRECTORY: directory })).toBe(enabled ? directory : undefined)
 })
 
 test.each([undefined, "", "0", "true", "1"])("signal server snapshots require the explicit 1 opt-in (%s)", (value) => {

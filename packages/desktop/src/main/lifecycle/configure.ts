@@ -1,4 +1,3 @@
-import { ProcessSignal } from "@opencode/util/process-signal"
 import { randomUUID } from "node:crypto"
 import { mkdirSync, rmSync } from "node:fs"
 import { enableCompileCache } from "node:module"
@@ -17,16 +16,6 @@ const jsCallStackFeature = "DocumentPolicyIncludeJSCallStacksInCrashReports"
 // take effect before ready, the single-instance lock is scoped to userData, and the early window
 // needs userData to find the persisted window list and state.
 export function configureApplication() {
-  // Keep the guard even for an invalid interval or missing destination: an unavailable debug
-  // extension must never restore SIGUSR2's fatal default while diagnostics have been opted into.
-  if (process.env.OPENCODE_DESKTOP_MEMORY_LOG !== undefined && process.platform !== "win32") {
-    ProcessSignal.install("SIGUSR2", () => {
-      void import("electron-log/main.js").then((log) => {
-        log.default.warn("heap snapshot signal ignored: capture is unavailable")
-      })
-    })
-  }
-
   try {
     process.chdir(homedir())
   } catch {}
