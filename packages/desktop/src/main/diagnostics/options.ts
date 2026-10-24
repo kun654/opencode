@@ -1,16 +1,15 @@
-/** Invalid values disable diagnostics rather than turning a bad interval into a hot timer. */
-export function memoryLogInterval(value: string | undefined) {
-  if (!value || !/^\d+(\.\d+)?$/.test(value)) return undefined
-  const seconds = Number(value)
+import { debugBuild } from "@opencode/gui-extensions/debug/options"
 
-  return seconds >= 1 && seconds <= 2_147_483 ? seconds * 1000 : undefined
-}
+/**
+ * The remote debugging port, only in debug builds. The dev server opens 9222 unless told otherwise; Beta opens one only
+ * when `OPENCODE_DESKTOP_REMOTE_DEBUGGING_PORT` names it. `0` lets Chromium pick a free port.
+ */
+export function remoteDebuggingPort(build: { readonly packaged: boolean; readonly channel: string }, value?: string) {
+  if (!debugBuild(build)) return undefined
 
-export function remoteDebuggingPort(packaged: boolean, value: string | undefined) {
-  if (value === undefined) return packaged ? undefined : "9222"
+  if (value === undefined) return build.packaged ? undefined : "9222"
 
   if (!/^\d+$/.test(value)) return undefined
-  const port = Number(value)
 
-  return port >= 1 && port <= 65535 ? String(port) : undefined
+  return Number(value) <= 65535 ? String(Number(value)) : undefined
 }

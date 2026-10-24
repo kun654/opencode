@@ -1,11 +1,11 @@
-import { appendFile } from "node:fs/promises"
+import { appendFile, mkdir } from "node:fs/promises"
 import path from "node:path"
 import { app, webContents } from "electron"
-import log from "electron-log/main.js"
 import { Schema } from "effect"
-import { memoryRecord, RendererMemory, type RendererRecord } from "./record"
+import type { Log } from "../sdk/main"
+import { memoryRecord, RendererMemory, type RendererRecord } from "./memory-record"
 
-// Runs only when diagnostics are enabled; no preload hooks, observers, or store subscriptions.
+// Runs only while diagnostics are on; no preload hooks, observers, or store subscriptions.
 const probe = `(() => {
   const memory = performance.memory;
   return {
@@ -14,8 +14,16 @@ const probe = `(() => {
   };
 })()`
 
-export function startMemoryLog(interval: number) {
-  const file = path.join(path.dirname(log.transports.file.getFile().path), "memory.jsonl")
+/** Appends a sample every `interval` ms to a new JSONL file in the desktop logs, which exported debug logs include. */
+export function startMemoryLog(interval: number, log: Log) {
+  const file = path.join(
+    app.getPath("userData"),
+    "logs",
+    `memory-${new Date().toISOString().replace(/[:.]/g, "")}.jsonl`,
+  )
+
+  // Without the launch switch, Chromium quantizes renderer heap sizes and refreshes them rarely.
+  const precise = app.commandLine.hasSwitch("enable-precise-memory-info")
   const pending = new WeakSet<Electron.WebContents>()
   let stopped = false
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -48,22 +56,25 @@ export function startMemoryLog(interval: number) {
       }),
     )
 
-    if (!stopped) await appendFile(file, `${JSON.stringify(memoryRecord(metrics, renderers))}\n`, { mode: 0o600 })
+    if (stopped) return
+    await mkdir(path.dirname(file), { recursive: true })
+    await appendFile(file, `${JSON.stringify(memoryRecord(metrics, renderers, precise))}\n`, { mode: 0o600 })
   }
 
   const tick = () => {
     void sample()
-      .catch((error: Error) => console.error("memory diagnostics failed", error.message))
+      .catch((error: Error) => log.write("error", "memory diagnostics sample failed", { error: error.message }))
       .finally(() => {
         if (!stopped) timer = setTimeout(tick, interval)
       })
   }
 
-  log.info("memory diagnostics enabled", { file, intervalMs: interval })
+  log.write("info", "memory diagnostics started", { file, intervalMs: interval, precise })
   timer = setTimeout(tick, interval)
 
   return () => {
     stopped = true
     clearTimeout(timer)
+    log.write("info", "memory diagnostics stopped", { file })
   }
 }

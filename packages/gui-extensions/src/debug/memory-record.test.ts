@@ -1,5 +1,5 @@
 import { afterEach, expect, setSystemTime, test } from "bun:test"
-import { memoryRecord } from "./record"
+import { memoryRecord } from "./memory-record"
 
 afterEach(() => setSystemTime())
 
@@ -20,6 +20,7 @@ test("JSONL correlates renderer heaps and OS memory by pid, with explicit units 
       { id: 7, pid: 42, type: "window", sample: { jsHeap: { used: 1024, total: 4096, limit: 8192 }, domElements: 15 } },
       { id: 8, pid: 43, type: "window", error: "Renderer sample timed out" },
     ],
+    true,
   )
 
   expect(JSON.parse(`${JSON.stringify(record)}\n`)).toEqual({
@@ -27,6 +28,7 @@ test("JSONL correlates renderer heaps and OS memory by pid, with explicit units 
     mainPid: process.pid,
     nativeMemoryUnit: "KiB",
     jsHeapUnit: "bytes",
+    preciseJsHeap: true,
     processes: [{ type: "Tab", pid: 42, workingSetSize: 2048, privateBytes: null }],
     renderers: [
       {

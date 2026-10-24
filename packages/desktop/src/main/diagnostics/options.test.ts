@@ -1,32 +1,27 @@
 import { expect, test } from "bun:test"
-import { memoryLogInterval, remoteDebuggingPort } from "./options"
+import { remoteDebuggingPort } from "./options"
+
+const builds = {
+  dev: { packaged: false, channel: "dev" },
+  beta: { packaged: true, channel: "beta" },
+  stable: { packaged: true, channel: "prod" },
+  packagedDev: { packaged: true, channel: "dev" },
+}
 
 test.each([
-  [undefined, undefined],
-  ["", undefined],
-  ["0", undefined],
-  ["-1", undefined],
-  ["NaN", undefined],
-  ["Infinity", undefined],
-  ["0.5", undefined],
-  ["2147484", undefined],
-  ["1", 1000],
-  ["2.5", 2500],
-  ["60", 60000],
-] as const)("memory interval %s is opt-in and bounded", (value, expected) => {
-  expect(memoryLogInterval(value)).toBe(expected)
-})
-
-test.each([
-  [true, undefined, undefined],
-  [false, undefined, "9222"],
-  [true, "9333", "9333"],
-  [false, "9333", "9333"],
-  [true, "", undefined],
-  [true, "0", undefined],
-  [true, "65536", undefined],
-  [true, "9222junk", undefined],
-  [true, "127.0.0.1:9222", undefined],
-] as const)("packaged=%s remote port=%s", (packaged, value, expected) => {
-  expect(remoteDebuggingPort(packaged, value)).toBe(expected)
+  ["dev", undefined, "9222"],
+  ["dev", "9333", "9333"],
+  ["dev", "0", "0"],
+  ["beta", undefined, undefined],
+  ["beta", "9333", "9333"],
+  ["beta", "0", "0"],
+  ["beta", "", undefined],
+  ["beta", "65536", undefined],
+  ["beta", "9222junk", undefined],
+  ["beta", "127.0.0.1:9222", undefined],
+  ["stable", undefined, undefined],
+  ["stable", "9333", undefined],
+  ["packagedDev", "9333", undefined],
+] as const)("%s remote port %s opens %s", (build, value, expected) => {
+  expect(remoteDebuggingPort(builds[build], value)).toBe(expected)
 })

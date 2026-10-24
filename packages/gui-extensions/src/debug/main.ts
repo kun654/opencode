@@ -3,8 +3,10 @@ import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { writeHeapSnapshot } from "node:v8"
 import type { MainSetup } from "../sdk/main"
-import { HeapSnapshots } from "./contract"
+import { HeapSnapshots, MemoryDiagnostics } from "./contract"
 import type definition from "./index"
+import { startMemoryLog } from "./memory-log"
+import { debugBuild, memoryLogInterval } from "./options"
 import { captureServer } from "./server-heap"
 
 /** A desktop process the manifest lists: the file written, or why there is none. */
@@ -15,6 +17,9 @@ type Snapshot = { readonly process: "main" | "window"; readonly pid: number; rea
 
 /** The last capture; the next one starts after it settles. */
 type Queue = { tail: Promise<unknown> }
+
+/** Stops the running memory diagnostics, while they run. */
+type Running = { stop?: () => void }
 
 const setup: MainSetup<typeof definition> = (ctx) => {
   const queue: Queue = { tail: Promise.resolve() }
@@ -90,6 +95,36 @@ const setup: MainSetup<typeof definition> = (ctx) => {
       queue.tail = run.catch(() => undefined)
 
       return run
+    },
+  })
+
+  if (!debugBuild(ctx.build)) return
+
+  // The environment turns diagnostics on for this launch; otherwise the debug bar's stored toggle does.
+  const envInterval = memoryLogInterval(process.env.OPENCODE_DESKTOP_MEMORY_LOG)
+  const stored = ctx.stores.memory
+  const running: Running = {}
+
+  const sync = () => {
+    const on = envInterval !== undefined || stored.value
+
+    if (on && !running.stop) running.stop = startMemoryLog(envInterval ?? 30_000, ctx.log)
+
+    if (on || !running.stop) return
+    running.stop()
+    running.stop = undefined
+  }
+
+  // Started before the Ipc is provided, so the first state windows receive already says whether diagnostics run.
+  sync()
+  ctx.scope.addFinalizer(() => running.stop?.())
+
+  const provider = ctx.provide(MemoryDiagnostics, {
+    state: () => ({ on: running.stop !== undefined, env: envInterval !== undefined }),
+    set: (enabled) => {
+      stored.set(enabled)
+      sync()
+      provider.changed()
     },
   })
 }

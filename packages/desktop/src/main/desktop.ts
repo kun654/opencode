@@ -10,7 +10,6 @@ import { DesktopLogging } from "./native/logging"
 import { BackgroundService } from "./service/background-service"
 import { DesktopCli } from "./service/desktop-cli"
 import { marks } from "./lifecycle/marks"
-import { memoryLogInterval } from "./diagnostics/options"
 
 // Everything above has been loaded and evaluated by now; the layers start below.
 marks.bundle = Date.now()
@@ -33,14 +32,6 @@ const runIpc = Effect.fn("Desktop.runIpc")(function* () {
   const logging = yield* DesktopLogging.Service
   yield* logging.startCrashReporter
   yield* installContextMenu
-  const memoryInterval = memoryLogInterval(process.env.OPENCODE_DESKTOP_MEMORY_LOG)
-
-  if (memoryInterval !== undefined) {
-    const { startMemoryLog } = yield* Effect.promise(() => import("./diagnostics/memory"))
-    const stop = startMemoryLog(memoryInterval)
-    yield* Effect.addFinalizer(() => Effect.sync(stop))
-  }
-
   yield* Effect.callback<void>((resume) => {
     const quit = () => resume(Effect.void)
     app.once("will-quit", quit)

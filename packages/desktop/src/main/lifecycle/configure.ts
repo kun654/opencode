@@ -4,8 +4,9 @@ import { enableCompileCache } from "node:module"
 import { homedir, tmpdir } from "node:os"
 import path from "node:path"
 import { app } from "electron"
-import { APP_ID, APP_NAME } from "../constants"
-import { memoryLogInterval, remoteDebuggingPort } from "../diagnostics/options"
+import { debugBuild, memoryLogInterval } from "@opencode/gui-extensions/debug/options"
+import { APP_ID, APP_NAME, CHANNEL } from "../constants"
+import { remoteDebuggingPort } from "../diagnostics/options"
 
 const testOnboarding = process.env.OPENCODE_TEST_ONBOARDING === "1"
 
@@ -30,14 +31,16 @@ export function configureApplication() {
   // Chromium animates each mouse-wheel notch on Linux; native Linux apps scroll by the full delta immediately.
   if (process.platform === "linux") app.commandLine.appendSwitch("disable-smooth-scrolling")
 
-  const debugPort = remoteDebuggingPort(app.isPackaged, process.env.OPENCODE_DESKTOP_REMOTE_DEBUGGING_PORT)
+  const build = { packaged: app.isPackaged, channel: CHANNEL }
+  const debugPort = remoteDebuggingPort(build, process.env.OPENCODE_DESKTOP_REMOTE_DEBUGGING_PORT)
 
   if (debugPort) app.commandLine.appendSwitch("remote-debugging-port", debugPort)
 
   if (app.commandLine.hasSwitch("remote-debugging-port"))
     app.commandLine.appendSwitch("remote-debugging-address", "127.0.0.1")
 
-  if (memoryLogInterval(process.env.OPENCODE_DESKTOP_MEMORY_LOG) !== undefined)
+  // Precise heap sizes need a launch switch. The debug bar's toggle starts the log without one.
+  if (debugBuild(build) && memoryLogInterval(process.env.OPENCODE_DESKTOP_MEMORY_LOG) !== undefined)
     app.commandLine.appendSwitch("enable-precise-memory-info")
 
   const testRoot = createTestRoot()

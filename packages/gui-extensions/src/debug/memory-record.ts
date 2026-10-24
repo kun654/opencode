@@ -14,12 +14,13 @@ export type RendererRecord = {
   error?: string
 }
 
-export function memoryRecord(metrics: ProcessMetric[], renderers: RendererRecord[]) {
+export function memoryRecord(metrics: ProcessMetric[], renderers: RendererRecord[], preciseJsHeap: boolean) {
   return {
     timestamp: new Date().toISOString(),
     mainPid: process.pid,
     nativeMemoryUnit: "KiB",
     jsHeapUnit: "bytes",
+    preciseJsHeap,
     processes: metrics.map((metric) => ({
       type: metric.type,
       pid: metric.pid,
